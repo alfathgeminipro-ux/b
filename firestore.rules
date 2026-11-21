@@ -1,0 +1,179 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Pillar 3: Reusable hardened primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Pillar 2: Validation Blueprints (Anti-Update-Gap)
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'photoURL', 'whatsapp', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'whatsapp', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == request.auth.uid && data.uid == userId && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.photoURL is string && data.photoURL.size() <= 500
+        && data.whatsapp is string && data.whatsapp.size() <= 20 && data.whatsapp.matches('^[0-9+\\-\\s]*$')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSavedGameAccount(data, userId, gameId) {
+      return data.keys().hasAll(['ownerUid', 'gameId', 'gameName', 'accountId', 'zoneId', 'updatedAt'])
+        && data.keys().hasOnly(['ownerUid', 'gameId', 'gameName', 'accountId', 'zoneId', 'updatedAt'])
+        && data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid == userId && isValidId(data.ownerUid)
+        && data.gameId is string && data.gameId == gameId && data.gameId.size() >= 1 && data.gameId.size() <= 64 && isValidId(data.gameId)
+        && data.gameName is string && data.gameName.size() >= 1 && data.gameName.size() <= 100
+        && data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 64
+        && data.zoneId is string && data.zoneId.size() <= 32
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTopUpOrder(data, orderId) {
+      return data.keys().hasAll([
+          'invoiceId', 'ownerUid', 'gameId', 'gameName', 'itemName',
+          'accountId', 'zoneId', 'whatsapp', 'paymentMethodId', 'paymentMethodName',
+          'basePrice', 'adminFee', 'uniqueCode', 'totalAmount',
+          'status', 'proofFileName', 'expiresAtMs', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'invoiceId', 'ownerUid', 'gameId', 'gameName', 'itemName',
+          'accountId', 'zoneId', 'whatsapp', 'paymentMethodId', 'paymentMethodName',
+          'basePrice', 'adminFee', 'uniqueCode', 'totalAmount',
+          'status', 'proofFileName', 'expiresAtMs', 'createdAt', 'updatedAt'
+        ])
+        && data.invoiceId is string && data.invoiceId == orderId && data.invoiceId.size() >= 6 && data.invoiceId.size() <= 40 && isValidId(data.invoiceId)
+        && data.ownerUid is string && data.ownerUid == request.auth.uid && isValidId(data.ownerUid)
+        && data.gameId is string && data.gameId.size() >= 1 && data.gameId.size() <= 64 && isValidId(data.gameId)
+        && data.gameName is string && data.gameName.size() >= 1 && data.gameName.size() <= 100
+        && data.itemName is string && data.itemName.size() >= 1 && data.itemName.size() <= 120
+        && data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 64
+        && data.zoneId is string && data.zoneId.size() <= 32
+        && data.whatsapp is string && data.whatsapp.size() >= 8 && data.whatsapp.size() <= 20 && data.whatsapp.matches('^[0-9+\\-\\s]+$')
+        && data.paymentMethodId is string && data.paymentMethodId.size() >= 1 && data.paymentMethodId.size() <= 40
+        && data.paymentMethodName is string && data.paymentMethodName.size() >= 1 && data.paymentMethodName.size() <= 80
+        && data.basePrice is number && data.basePrice >= 0 && data.basePrice <= 50000000
+        && data.adminFee is number && data.adminFee >= 0 && data.adminFee <= 1000000
+        && data.uniqueCode is number && data.uniqueCode >= 0 && data.uniqueCode <= 999
+        && data.totalAmount is number && data.totalAmount == (data.basePrice + data.adminFee + data.uniqueCode)
+        && data.status is string && data.status in ['pending', 'waiting_verification', 'completed', 'expired']
+        && data.proofFileName is string && data.proofFileName.size() <= 160
+        && data.expiresAtMs is number && data.expiresAtMs > 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Users collection (PII isolated strictly to owner)
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'whatsapp', 'updatedAt']);
+      allow delete: if false;
+
+      // Saved favorite game accounts subcollection (Master Gate checks parent exists)
+      match /savedAccounts/{gameId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(gameId) && isOwner(userId)
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow list: if isSignedIn() && isValidId(userId) && isOwner(userId)
+          && resource.data.ownerUid == request.auth.uid;
+        allow create: if isVerifiedUser()
+          && isValidId(userId) && isValidId(gameId)
+          && isOwner(userId)
+          && isValidSavedGameAccount(incoming(), userId, gameId)
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow update: if isVerifiedUser()
+          && isValidId(userId) && isValidId(gameId)
+          && isOwner(userId)
+          && isValidSavedGameAccount(incoming(), userId, gameId)
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().gameId == existing().gameId
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['gameName', 'accountId', 'zoneId', 'updatedAt'])
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(gameId) && isOwner(userId)
+          && exists(/databases/$(database)/documents/users/$(userId));
+      }
+    }
+
+    // Orders collection (PII isolated to owner, strict terminal state lock, action-based updates)
+    match /orders/{orderId} {
+      allow get: if isSignedIn() && isValidId(orderId) && existing().ownerUid == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(orderId)
+        && isValidTopUpOrder(incoming(), orderId)
+        && incoming().status == 'pending'
+        && incoming().proofFileName == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(orderId)
+        && isValidTopUpOrder(incoming(), orderId)
+        && existing().ownerUid == request.auth.uid
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().invoiceId == existing().invoiceId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        // Terminal state lock: completed or expired orders cannot be updated
+        && existing().status in ['pending', 'waiting_verification']
+        && (
+          // Action 1: Buyer uploads transfer proof
+          (
+            existing().status == 'pending'
+            && incoming().status == 'waiting_verification'
+            && incoming().proofFileName.size() >= 1
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'proofFileName', 'updatedAt'])
+          )
+          ||
+          // Action 2: Payment timer expired
+          (
+            existing().status == 'pending'
+            && incoming().status == 'expired'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if false;
+    }
+  }
+}

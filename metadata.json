@@ -1,0 +1,8 @@
+{
+  "name": "ALSTORE — Top-Up Game Cepat & Terpercaya 24/7",
+  "description": "Platform top-up game modern, elegan, dan berkecepatan tinggi. Top-up Mobile Legends, Free Fire, PUBG Mobile, Point Blank, Valorant, Genshin Impact, dan lainnya dengan harga bersahabat 24/7.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
